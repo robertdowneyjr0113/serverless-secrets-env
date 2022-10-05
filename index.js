@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const BbPromise = require('bluebird');
+const packageInfo = require('./package.json')
 
 const algorithm = 'aes-256-cbc';
 
@@ -11,11 +12,14 @@ class ServerlessSecretsPlugin {
   constructor(serverless, options) {
     this.serverless = serverless;
     this.options = options;
-    if (this.serverless.service.custom && this.serverless.service.custom.secretsFilePathPrefix) {
-      this.customPath = this.serverless.service.custom.secretsFilePathPrefix;
-    } else {
-      this.customPath = '';
-    }
+    
+    this.custom = this.serverless.service.custom[packageInfo.name] || {};
+    this.config = this.serverless.config || {};
+    this.stage = this.options.stage || this.serverless.service.provider.stage;
+    
+    this.secretsFilePathPrefix = this.custom.secretsFilePathPrefix || '';
+    this.source = this.custom.source || `secrets.${this.stage}.yml`;
+    this.entry = this.custom.entry || `${this.source.split('.yml')[0]}.encrypted`;
 
     const commandOptions = {
       stage: {
@@ -56,21 +60,22 @@ class ServerlessSecretsPlugin {
 
   encrypt() {
     return new BbPromise((resolve, reject) => {
-      const servicePath = this.serverless.config.servicePath;
-      const customPath = this.customPath;
-      const credentialFileName = `secrets.${this.options.stage}.yml`;
-      const encryptedCredentialFileName = `${credentialFileName}.encrypted`;
-      const secretsPath = path.join(servicePath, customPath, credentialFileName);
-      const encryptedCredentialsPath = path.join(servicePath, customPath, encryptedCredentialFileName);
-
+      const servicePath = this.config.serviceDir;
+      const secretsPath = path.resolve(servicePath, this.secretsFilePathPrefix, this.source);
+      const encryptedCredentialsPath = path.resolve(servicePath, this.secretsFilePathPrefix, this.entry);
+      
+      this.options.password = crypto.pbkdf2Sync(this.options.password, 'default', 100000, 32, 'sha512');
+      
+      const iv = crypto.pbkdf2Sync(this.options.password, 'cipher-iv', 100000, 16, 'sha512');
+      
       fs.createReadStream(secretsPath)
         .on('error', reject)
-        .pipe(crypto.createCipher(algorithm, this.options.password))
+        .pipe(crypto.createCipheriv(algorithm, Buffer.from(this.options.password), iv))
         .on('error', reject)
         .pipe(fs.createWriteStream(encryptedCredentialsPath))
         .on('error', reject)
         .on('close', () => {
-          this.serverless.cli.log(`Successfully encrypted '${credentialFileName}' to '${encryptedCredentialFileName}'`);
+          this.serverless.cli.log(`Successfully encrypted '${this.source}' to '${this.entry}'`);
           resolve();
         });
     });
@@ -78,21 +83,21 @@ class ServerlessSecretsPlugin {
 
   decrypt() {
     return new BbPromise((resolve, reject) => {
-      const servicePath = this.serverless.config.servicePath;
-      const customPath = this.customPath;
-      const credentialFileName = `secrets.${this.options.stage}.yml`;
-      const encryptedCredentialFileName = `${credentialFileName}.encrypted`;
-      const secretsPath = path.join(servicePath, customPath, credentialFileName);
-      const encryptedCredentialsPath = path.join(servicePath, customPath, encryptedCredentialFileName);
+      const servicePath = this.config.serviceDir;
+      const secretsPath = path.resolve(servicePath, this.secretsFilePathPrefix, this.source);
+      const encryptedCredentialsPath = path.resolve(servicePath, this.secretsFilePathPrefix, this.entry);
+      
+      this.options.password = crypto.pbkdf2Sync(this.options.password, 'default', 100000, 32, 'sha512');
+      const iv = crypto.pbkdf2Sync(this.options.password, 'cipher-iv', 100000, 16, 'sha512');
 
       fs.createReadStream(encryptedCredentialsPath)
         .on('error', reject)
-        .pipe(crypto.createDecipher(algorithm, this.options.password))
+        .pipe(crypto.createDecipheriv(algorithm, this.options.password, iv))
         .on('error', reject)
         .pipe(fs.createWriteStream(secretsPath))
         .on('error', reject)
         .on('close', () => {
-          this.serverless.cli.log(`Successfully decrypted '${encryptedCredentialFileName}' to '${credentialFileName}'`);
+          this.serverless.cli.log(`Successfully decrypted '${this.entry}' to '${this.source}'`);
           resolve();
         });
     });

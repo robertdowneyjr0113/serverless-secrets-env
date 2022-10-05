@@ -1,5 +1,5 @@
 {
-  "name": "serverless-secrets-plugin",
+  "name": "serverless-secrets-env",
   "version": "0.1.0",
   "description": "A Serverless plugin to help managing credentials in encrypted files",
   "author": "",
@@ -9,7 +9,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git://github.com/serverless/serverless-secrets-plugin.git"
+    "url": "git@github.com:robertdowneyjr0113/serverless-secrets-env.git"
   },
   "dependencies": {
     "bluebird": "^3.4.6"
