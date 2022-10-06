@@ -4,7 +4,20 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const BbPromise = require('bluebird');
-const packageInfo = require('./package.json')
+const packageInfo = require('./package.json');
+const readline = require('readline');
+
+const rl = readline.createInterface({
+  input: process.stdin,
+  output: process.stdout
+});
+
+rl._writeToOutput = function _writeToOutput(stringToWrite) {
+  if (rl.stdoutMuted)
+    rl.output.write('\x1B[2K\x1B[200D'+rl.query+'*'.repeat(rl.line.length));
+  else
+    rl.output.write(stringToWrite);
+};
 
 const algorithm = 'aes-256-cbc';
 
@@ -17,20 +30,37 @@ class ServerlessSecretsPlugin {
     this.config = this.serverless.config || {};
     this.stage = this.options.stage || this.serverless.service.provider.stage;
     
-    this.secretsFilePathPrefix = this.custom.secretsFilePathPrefix || '';
+    this.servicePath = this.config.serviceDir;
+    const secretsFilePathPrefix = this.custom.secretsFilePathPrefix || '';
+
     this.source = this.custom.source || `secrets.${this.stage}.yml`;
     this.entry = this.custom.entry || `${this.source.split('.yml')[0]}.encrypted`;
+
+    this.sourceFile = path.basename(this.source);
+    this.entryFile = path.basename(this.entry);
+
+    this.sourceFolderPath = path.resolve(this.servicePath, secretsFilePathPrefix, this.source.split(this.sourceFile)[0]);
+    this.entryFolderPath = path.resolve(this.servicePath, secretsFilePathPrefix, this.entry.split(this.entryFile)[0]);
+
+    if (fs.existsSync(this.sourceFolderPath) || fs.existsSync(this.entryFolderPath)) {
+      fs.mkdirSync(this.sourceFolderPath, {
+        recursive: true,
+      });
+      fs.mkdirSync(this.entryFolderPath, {
+        recursive: true,
+      });
+    }
 
     const commandOptions = {
       stage: {
         usage: 'Stage of the file to encrypt',
         shortcut: 's',
-        required: true,
+        required: false,
       },
       password: {
         usage: 'Password to encrypt the file.',
         shortcut: 'p',
-        required: true,
+        required: false,
       },
     };
 
@@ -59,18 +89,18 @@ class ServerlessSecretsPlugin {
   }
 
   encrypt() {
-    return new BbPromise((resolve, reject) => {
-      const servicePath = this.config.serviceDir;
-      const secretsPath = path.resolve(servicePath, this.secretsFilePathPrefix, this.source);
-      const encryptedCredentialsPath = path.resolve(servicePath, this.secretsFilePathPrefix, this.entry);
-      
-      this.options.password = crypto.pbkdf2Sync(this.options.password, 'default', 100000, 32, 'sha512');
-      
-      const iv = crypto.pbkdf2Sync(this.options.password, 'cipher-iv', 100000, 16, 'sha512');
-      
+    return new BbPromise(async (resolve, reject) => {
+      const secretsPath = path.resolve(this.sourceFolderPath, this.sourceFile);
+      const encryptedCredentialsPath = path.resolve(this.entryFolderPath, this.entryFile);
+
+      const password = this.options.password || await this.readPassword();
+
+      const hashpassword = crypto.pbkdf2Sync(password, 'default', 100000, 32, 'sha512');
+      const iv = crypto.pbkdf2Sync(password, 'cipher-iv', 100000, 16, 'sha512');
+
       fs.createReadStream(secretsPath)
         .on('error', reject)
-        .pipe(crypto.createCipheriv(algorithm, Buffer.from(this.options.password), iv))
+        .pipe(crypto.createCipheriv(algorithm, Buffer.from(hashpassword), iv))
         .on('error', reject)
         .pipe(fs.createWriteStream(encryptedCredentialsPath))
         .on('error', reject)
@@ -82,17 +112,18 @@ class ServerlessSecretsPlugin {
   }
 
   decrypt() {
-    return new BbPromise((resolve, reject) => {
-      const servicePath = this.config.serviceDir;
-      const secretsPath = path.resolve(servicePath, this.secretsFilePathPrefix, this.source);
-      const encryptedCredentialsPath = path.resolve(servicePath, this.secretsFilePathPrefix, this.entry);
+    return new BbPromise(async (resolve, reject) => {
+      const secretsPath = path.resolve(this.sourceFolderPath, this.sourceFile);
+      const encryptedCredentialsPath = path.resolve(this.entryFolderPath, this.entryFile);
+
+      const password = this.options.password || await this.readPassword();
       
-      this.options.password = crypto.pbkdf2Sync(this.options.password, 'default', 100000, 32, 'sha512');
-      const iv = crypto.pbkdf2Sync(this.options.password, 'cipher-iv', 100000, 16, 'sha512');
+      const hashpassword = crypto.pbkdf2Sync(password, 'default', 100000, 32, 'sha512');
+      const iv = crypto.pbkdf2Sync(password, 'cipher-iv', 100000, 16, 'sha512');
 
       fs.createReadStream(encryptedCredentialsPath)
         .on('error', reject)
-        .pipe(crypto.createDecipheriv(algorithm, this.options.password, iv))
+        .pipe(crypto.createDecipheriv(algorithm, hashpassword, iv))
         .on('error', reject)
         .pipe(fs.createWriteStream(secretsPath))
         .on('error', reject)
@@ -100,6 +131,19 @@ class ServerlessSecretsPlugin {
           this.serverless.cli.log(`Successfully decrypted '${this.entry}' to '${this.source}'`);
           resolve();
         });
+    });
+  }
+
+  readPassword() {
+    return new BbPromise(function (resolve) {
+      rl.stdoutMuted = true;
+
+      rl.query = 'Enter your password: ';
+      rl.question(rl.query, function (password) {
+        rl.history = rl.history.slice(1);
+        rl.close();
+        resolve(password);
+      });
     });
   }
 

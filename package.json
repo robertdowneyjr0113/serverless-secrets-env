@@ -1,6 +1,6 @@
 {
   "name": "serverless-secrets-env",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "A Serverless plugin to help managing credentials in encrypted files",
   "author": "",
   "license": "MIT",
